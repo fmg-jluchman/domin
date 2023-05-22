@@ -1,6 +1,6 @@
-*! domin version 3.4.2  3/7/2023 Joseph N. Luchman
+*! domin version 3.5.0  mth/yr/202x Joseph N. Luchman
 
-quietly include dominance.mata, adopath
+//quietly include dominance.mata, adopath	//load Mata functions for domin
 
 program define domin, eclass //history and version information at end of file
 
@@ -19,7 +19,8 @@ if replay() { //replay results - error if "by"
 }
 
 syntax varlist(min = 1 ts) [in] [if] [aw pw iw fw] , [Reg(string) Fitstat(string) Sets(string) /// define syntax
-All(varlist fv ts) noCOMplete noCONditional EPSilon mi miopt(string) CONSmodel REVerse]
+All(varlist fv ts) noCOMplete noCONditional EPSilon mi miopt(string) CONSmodel REVerse ///
+WSets(string)]
 
 /*defaults and warnings*/
 if !strlen("`reg'") { //if no "reg" option specified - notify and use default "regress"
@@ -56,9 +57,9 @@ if !strlen("`mi'") & strlen("`miopt'") {	//warning if "miopt" is used without "m
 }
 
 /*exit conditions*/
-if strlen("`epsilon'") & strlen("`sets'") {	//"epsilon" and "sets" cannot go together 
+if strlen("`epsilon'") & (strlen("`sets'") | strlen("`wsets'")) {	//"epsilon" and "sets" cannot go together 
 
-	display "{err}Options {opt epsilon} and {opt sets()} not allowed together."
+	display "{err}Options {opt epsilon} and {opt sets()} or {opt wset()} not allowed together."
 	
 	exit 198
 
@@ -123,6 +124,9 @@ if strlen("`mi'") {	//are data actually mi set?
 
 }
 
+**# ~~~ to add - built-in method not mi-able ~~~ 
+**# ~~~ weights with built-in?? ~~~ 
+
 capture which lmoremata.mlib	//is moremata present?
 
 if _rc {	//if moremata cannot be found, tell user to install it.
@@ -157,7 +161,7 @@ local diivs "`ivs'"	//create separate macro to use for display purposes
 
 local mkivs "`ivs'"	//create separate macro to use for sample marking purposes
 
-if `:list sizeof sets' {	//parse and process the sets if included
+if `:list sizeof sets' {	//parse and process the sets if included ...
 
 	/*pull out set #1 from independent variables list*/
 	gettoken one two: sets, bind	//pull out the first set
@@ -175,7 +179,6 @@ if `:list sizeof sets' {	//parse and process the sets if included
 	local mkivs `mkivs' `set1'	//include variables in set1 in the mark sample independent variable list
 	
 	local diivs "`diivs' set1"	//include the name "set1" into list of variables
-	
 	
 	while strlen("`two'") {	//continue parsing beyond set1 so long at sets remain to be parsed (i.e., there's something in the macro "two")
 
@@ -197,14 +200,61 @@ if `:list sizeof sets' {	//parse and process the sets if included
 			
 }
 
+else local setcnt = 0  //... othwerwise note 0 sets 
 
-if `:list sizeof ivs' < 2 {	//exit if too few predictors/sets (otherwise prodices cryptic Mata error)
+**# ~~ the within-sets needs additional thought sets are not used the same way now ~~ **
+**# ~~ do a check for extra parentheses within set and wset - now makes cryptic error about fitstat ~~ **
+if `:list sizeof wsets' {	//parse and process the wsets if included ...
+
+	/*pull out wset #1 from independent variables list*/
+	gettoken one two: wsets, bind	//pull out the first wset
+	
+	local wsetcnt = 1	//give the first wset a number that can be updated as a macro
+	
+	local one = regexr("`one'", "[/(]", "")	//remove left paren
+			
+	local one = regexr("`one'", "[/)]", "")	//remove right paren
+	
+	local wset1 `one'	//name and number set
+	
+	local ivs "`ivs' {`wset1'}"	//include set1 into list of independent variables, include characters for binding in Mata
+	
+	local mkivs `mkivs' `wset1'	//include variables in wset1 in the mark sample independent variable list
+	
+	local diivs "`diivs' `wset1'"	//include the names of wset1 variables in list of variables
+	
+	while strlen("`two'") {	//continue parsing beyond set1 so long at sets remain to be parsed (i.e., there's something in the macro "two")
+
+		gettoken one two: two, bind	//again pull out a set
+			
+		local one = regexr("`one'", "[/(]", "")	//remove left paren
+		
+		local one = regexr("`one'", "[/)]", "")	//remove right paren
+	
+		local wset`++wsetcnt' `one'	//name and number set - advance set count by 1
+		
+		local ivs "`ivs' {`wset`wsetcnt''}"	//include further sets - separated by binding characters - into independent variables list
+		
+		local mkivs `mkivs' `wset`wsetcnt''	//include sets into mark sample independent variables list
+		
+		local diivs "`diivs' `wset`wsetcnt''"  //include set number into display list
+				
+	}
+			
+}
+
+else local wsetcnt = 0  //... othwerwise note 0 wsets 
+
+if `=`:list sizeof varlist' - 1 + `setcnt' + `wsetcnt'' < 2 {	//exit if too few predictors/sets (otherwise produces cryptic Mata error)
 
 	display "{err}{cmd:domin} requires at least 2 independent variables or independent variable sets."
 	
 	exit 198
 
 }
+
+**# r
+di "`ivs'" // ~~
 
 /*finalize setup*/
 tempvar touse keep	//declare sample marking variables
@@ -217,9 +267,11 @@ quietly generate byte `keep' = 1 `if' `in' //generate tempvar that adjusts for "
 
 markout `touse' `dv' `mkivs' `all' `keep'	//do the sample marking
 
-local nobindivs = subinstr("`ivs'", "<", "", .)	//take out left binding character(s) for use in adjusting e(sample) when obs are dropped by an anslysis
+local nobindivs = subinstr("`ivs'", "<", "", .)	//take out left set binding character(s) for use in adjusting e(sample) when obs are dropped by an anslysis
+local nobindivs = subinstr("`nobindivs'", "{", "", .)	//take out left wset binding character(s) for use in adjusting e(sample) when obs are dropped by an anslysis
 
-local nobindivs = subinstr("`nobindivs'", ">", "", .)	//take out right binding character(s) for use in adjusting e(sample) when obs are dropped by an anslysis
+local nobindivs = subinstr("`nobindivs'", ">", "", .)	//take out right set binding character(s) for use in adjusting e(sample) when obs are dropped by an anslysis
+local nobindivs = subinstr("`nobindivs'", "}", "", .)	//take out right wset binding character(s) for use in adjusting e(sample) when obs are dropped by an anslysis
 
 if !strlen("`epsilon'") {	//don't invoke program checks if epsilon option is invoked
 
@@ -366,21 +418,24 @@ if strlen("`epsilon'") { //primary analysis when "epsilon" is invoked
 
 else {
 	
-	mata: model_specs = domin_specs()
+	tempname model_specs //define tempname for -domin_specs()- container; ensures removal after runtime
+	mata: `model_specs' = domin_specs()
 	
-	mata: model_specs.mi = st_local("mi")
-	mata: model_specs.reg = st_local("reg")
-	mata: model_specs.dv = st_local("dv")
-	mata: model_specs.all = st_local("all")
-	mata: model_specs.weight = st_local("weight")
-	mata: model_specs.exp = st_local("exp")
-	mata: model_specs.touse = st_local("touse")
-	mata: model_specs.regopts = st_local("regopts")
+	mata: `model_specs'.mi = st_local("mi")
+	mata: `model_specs'.reg = st_local("reg")
+	mata: `model_specs'.dv = st_local("dv")
+	mata: `model_specs'.all = st_local("all")
+	mata: `model_specs'.weight = st_local("weight")
+	mata: `model_specs'.exp = st_local("exp")
+	mata: `model_specs'.touse = st_local("touse")
+	mata: `model_specs'.regopts = st_local("regopts")
 
-	mata: dominance(model_specs, &domin_call(), ///
+	mata: dominance(`model_specs', &domin_call(), ///
 		st_local("conditional'"), st_local("complete"), ///
 		st_local("ivs"), ///
 		st_numscalar(st_local("allfs")), st_numscalar(st_local("consfs"))) //invoke "dominance()" function in Mata 
+		
+	mata: mata drop `model_specs'
 	
 	/*translate r-class results into temp results*/
 	matrix `domwgts' = r(domwgts)
@@ -749,5 +804,12 @@ end
 	- does not force arguments but accepts single objects for command-specific needs 
 	- records domin options directly (doesn't call them as local macros)
  // 3.4.2 - March 7, 2023
- - call 'dominance.mata' as opposed to using 'lb_dominance.mlib' to allow backward compatability
+ - call/-include- 'dominance.mata' as opposed to using 'lb_dominance.mlib' to allow backward compatability to Stata 12
+	- .mlib files compile in such a way that they are not backward compatible. 
+ ---
+ domin version 3.5.0 - mth day, 202x
+** planned ** - Owen decomp using -wset()- option
+** planned ** - Built-in covariance-based method for 'regress'
+- model_specs is now implemented using a tempname; previously a Mata object that that remains after estimation
+** dominance.mata to 0.1.0 (must ensure compatability with domme!)
  */
